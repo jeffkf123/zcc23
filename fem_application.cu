@@ -259,7 +259,8 @@ int main(int argc, char **argv)
         run_test<float>(N, n_repeat);
     }
 
-SparseMatrix crsMatrix;
+SparseMatrix<double> crsMatrix = fill_sparse_matrix<double>(N, MemorySpace::Host);
+
 double* vector;
 double* resultCRS;
 double* resultCellCSigma;
