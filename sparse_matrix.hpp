@@ -107,11 +107,64 @@ void SparseMatrix<Number>::applyCellCSigma(const Vector<Number>& src, Vector<Num
         }
     }
 }
+#define BLOCK_SIZE 32
 
+// CELL-C-Sigma matrix storage format
+class CellCSigmaMatrix {
+public:
+    double* values;           // Non-zero values of the matrix
+    int* column_indices;      // Column indices of the non-zero values
+    int* block_lengths;       // Number of non-zero elements in each block
+
+    // Constructor
+    CellCSigmaMatrix(int numRows, int numCols) {
+        int numBlocks = (numRows * numCols) / (BLOCK_SIZE * BLOCK_SIZE);
+        values = new double[numBlocks * BLOCK_SIZE * BLOCK_SIZE];
+        column_indices = new int[numBlocks * BLOCK_SIZE * BLOCK_SIZE];
+        block_lengths = new int[numBlocks];
+        
+        // Initialize with zeros and default column indices
+        for (int i = 0; i < numBlocks * BLOCK_SIZE * BLOCK_SIZE; i++) {
+            values[i] = 0.0;
+            column_indices[i] = 0;  // Default to the first entry of the row
+        }
+        for (int i = 0; i < numBlocks; i++) {
+            block_lengths[i] = 0;
+        }
+    }
+
+    // Destructor
+    ~CellCSigmaMatrix() {
+        delete[] values;
+        delete[] column_indices;
+        delete[] block_lengths;
+    }
+};
+CellCSigmaMatrix convertCRStoCellCSigma(const SparseMatrix& crsMatrix) {
+    CellCSigmaMatrix cellCSigmaMatrix(crsMatrix.numRows, crsMatrix.numCols);
+    int numBlockCols = (crsMatrix.numCols + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    for (int i = 0; i < crsMatrix.numRows; i++) {
+        int blockRow = i / BLOCK_SIZE;
+        for (int j = crsMatrix.row_ptr[i]; j < crsMatrix.row_ptr[i + 1]; j++) {
+            int col = crsMatrix.col_idx[j];
+            int blockCol = col / BLOCK_SIZE;
+            int blockIdx = blockRow * numBlockCols + blockCol;
+
+            int pos = blockIdx * BLOCK_SIZE * BLOCK_SIZE + cellCSigmaMatrix.block_lengths[blockIdx];
+            cellCSigmaMatrix.values[pos] = crsMatrix.val[j];
+            cellCSigmaMatrix.column_indices[pos] = col % BLOCK_SIZE;
+            cellCSigmaMatrix.block_lengths[blockIdx]++;
+        }
+    }
+
+    return cellCSigmaMatrix;
+}
 template <typename Number>
 class SparseMatrix
 {
 public:
+
   void convertToCellCSigma();
   void applyCellCSigma(const Vector<Number>& src, Vector<Number>& dst);
   static const int block_size = Vector<Number>::block_size;
