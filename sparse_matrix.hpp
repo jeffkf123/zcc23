@@ -54,6 +54,10 @@ template <typename Number>
 class SparseMatrix
 {
 public:
+Number *      values;
+ std::size_t get_n_rows() const { return n_rows; }
+    std::size_t* get_row_starts() const { return row_starts; }
+    unsigned int* get_column_indices() const { return column_indices; }
   static const int block_size = Vector<Number>::block_size;
 
   SparseMatrix(const std::vector<unsigned int> &row_lengths,
@@ -381,7 +385,7 @@ private:
   std::size_t   n_rows;
   std::size_t * row_starts;
   unsigned int *column_indices;
-  Number *      values;
+  
   std::size_t   n_global_nonzero_entries;
   MemorySpace   memory_space;
 
@@ -399,11 +403,11 @@ private:
   mutable std::vector<Number>                        receive_data;
 };
 
-CellCSigmaMatrix convertToCellCSigma(const SparseMatrix& crsMatrix) {
+CellCSigmaMatrix convertToCellCSigma(const SparseMatrix<double>& crsMatrix) {
     CellCSigmaMatrix cellCSigmaMatrix;
 
     // Determine the number of blocks
-    cellCSigmaMatrix.num_blocks = (crsMatrix.num_rows + C - 1) / C;
+    cellCSigmaMatrix.num_blocks = (crsMatrix.get_n_rows() + C - 1) / C;
 
     // Allocate memory for values, column_indices, and block_lengths
     cellCSigmaMatrix.values = new double[cellCSigmaMatrix.num_blocks * C * C];
@@ -420,11 +424,11 @@ CellCSigmaMatrix convertToCellCSigma(const SparseMatrix& crsMatrix) {
     }
 
     // Convert CRS format to CELL-C-Sigma format
-    for (int i = 0; i < crsMatrix.num_rows; i++) {
+    for (int i = 0; i < crsMatrix.get_n_rows(); i++) {
         int block_idx = i / C;
         int block_offset = i % C;
-        for (int j = crsMatrix.row_ptr[i]; j < crsMatrix.row_ptr[i + 1]; j++) {
-            int col = crsMatrix.col_indices[j];
+        for (int j = crsMatrix.get_row_starts()[i]; j < crsMatrix.get_row_starts()[i + 1]; j++) {
+            int col = crsMatrix.get_column_indices()[j];
             double value = crsMatrix.values[j];
 
             int position = block_idx * C * C + block_offset * C + col % C;
