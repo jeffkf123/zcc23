@@ -31,6 +31,29 @@ public:
         values.resize(size);
         column_indices.resize(size);
         block_lengths.resize(size / C);
+
+        // Allocate device memory
+        cudaMalloc(&d_values, size * sizeof(Number));
+        cudaMalloc(&d_column_indices, size * sizeof(int));
+        cudaMalloc(&d_block_lengths, (size / C) * sizeof(int));
+    }
+
+    ~CellCSigmaMatrix()
+    {
+        // Free device memory
+        cudaFree(d_values);
+        cudaFree(d_column_indices);
+        cudaFree(d_block_lengths);
+    }
+      Vector<Number> multiply(const Vector<Number>& vec) const
+    {
+        Vector<Number> result = vec.copy_to_device(); // Ensure the result vector is on the device
+
+        // Call the CUDA kernel
+        int num_blocks = (size + C - 1) / C;
+        multiplyKernel<<<num_blocks, C>>>(d_values, d_column_indices, d_block_lengths, vec.begin(), result.begin(), size);
+
+        return result.copy_to_host(); // Copy the result back to the host
     }
 
     void computeOnHost(const std::vector<Number>& crs_values,
@@ -57,38 +80,54 @@ public:
             }
             block_lengths[row / C] = block_idx - (row / C) * C * C;
         }
-    }
+          // Transfer data to device
+        cudaMemcpy(d_values, values.data(), size * sizeof(Number), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_column_indices, column_indices.data(), size * sizeof(int), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_block_lengths, block_lengths.data(), (size / C) * sizeof(int), cudaMemcpyHostToDevice);
+    
 
-    Vector<Number> multiply(const Vector<Number>& vec) const
-    {
-        Vector<Number> result(size, MemorySpace::Host);
+  }
 
-        int block_idx = 0;
-        for (std::size_t row = 0; row < size; row += C)
-        {
-            for (std::size_t col = 0; col < size; col += C)
-            {
-                for (int i = 0; i < C; ++i)
-                {
-                    Number sum = 0;
-                    for (int j = 0; j < block_lengths[row / C] / C; ++j)
-                    {
-                        sum += values[block_idx + j] * vec(col + column_indices[block_idx + j]);
-                    }
-                    result(row + i) += sum;
-                    block_idx += block_lengths[row / C] / C;
-                }
-            }
-        }
-
-        return result;
-    }
-
+private:
     std::vector<Number> values;
     std::vector<int> column_indices;
     std::vector<int> block_lengths;
 
+    Number* d_values;
+    int* d_column_indices;
+    int* d_block_lengths;
+
     std::size_t size;
+
+    void multiplyKernel(const Number* d_values, const int* d_column_indices, const int* d_block_lengths, const Number* d_vec, Number* d_result, std::size_t size)
+    {
+        int row = blockIdx.x * blockDim.x + threadIdx.x;
+
+        if (row >= size)
+            return;
+
+        extern __shared__ Number shared_vec[];
+        int block_start = blockIdx.x * C;
+        int block_end = block_start + C;
+
+        // Load vector elements into shared memory
+        for (int i = threadIdx.x; i < C && block_start + i < size; i += blockDim.x)
+        {
+            shared_vec[i] = d_vec[block_start + i];
+        }
+        __syncthreads();
+
+        Number sum = 0;
+        int block_idx = row / C * C * C + threadIdx.x * C;
+        for (int j = 0; j < C; ++j)
+        {
+            int col = d_column_indices[block_idx + j];
+            sum += d_values[block_idx + j] * shared_vec[col];
+        }
+
+        atomicAdd(&d_result[row], sum);
+    }
+    
 };
 
 unsigned int get_n_mpi_ranks(MPI_Comm communicator)
