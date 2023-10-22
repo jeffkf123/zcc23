@@ -38,11 +38,82 @@ __global__ void compute_spmv(const std::size_t N,
 
 
 // Sparse matrix in compressed row storage (crs) format
+template <typename Number>
+void SparseMatrix<Number>::convertToCellCSigma() {
+    constexpr int C = 32;  // Block size
+
+    // Temporary structures for the converted matrix
+    std::vector<Number> new_values;
+    std::vector<unsigned int> new_column_indices;
+
+    // Iterate over the matrix in blocks
+    for (int i = 0; i < n_rows; i += C) {
+        for (int j = 0; j < n_cols; j += C) {
+            // Extract the block
+            std::vector<Number> block_values;
+            std::vector<unsigned int> block_indices;
+
+            for (int ii = i; ii < std::min(i + C, n_rows); ++ii) {
+                for (int jj = j; jj < std::min(j + C, n_cols); ++jj) {
+                    // Assuming the matrix is stored in CRS format
+                    for (int k = row_lengths[ii]; k < row_lengths[ii + 1]; ++k) {
+                        if (column_indices[k] == jj) {
+                            block_values.push_back(values[k]);
+                            block_indices.push_back(jj);
+                        }
+                    }
+                }
+            }
+
+            // Sort the block according to the sigma function (identity in this case)
+            // ...
+
+            // Append the sorted block to new_values and new_column_indices
+            new_values.insert(new_values.end(), block_values.begin(), block_values.end());
+            new_column_indices.insert(new_column_indices.end(), block_indices.begin(), block_indices.end());
+        }
+    }
+
+    // Update the member variables with the converted data
+    values = new_values;
+    column_indices = new_column_indices;
+}
+template <typename Number>
+void SparseMatrix<Number>::applyCellCSigma(const Vector<Number>& src, Vector<Number>& dst) {
+    constexpr int C = 32;  // Block size
+
+    // Clear the destination vector
+    dst.clear();
+
+    // Iterate over the matrix in blocks
+    for (int i = 0; i < n_rows; i += C) {
+        for (int j = 0; j < n_cols; j += C) {
+            // Extract the block
+            std::vector<Number> block_values;
+            std::vector<unsigned int> block_indices;
+
+            for (int ii = i; ii < std::min(i + C, n_rows); ++ii) {
+                Number sum = 0;
+                for (int jj = j; jj < std::min(j + C, n_cols); ++jj) {
+                    // Assuming the matrix is stored in CRS format
+                    for (int k = row_lengths[ii]; k < row_lengths[ii + 1]; ++k) {
+                        if (column_indices[k] == jj) {
+                            sum += values[k] * src[jj];
+                        }
+                    }
+                }
+                dst[ii] += sum;
+            }
+        }
+    }
+}
 
 template <typename Number>
 class SparseMatrix
 {
 public:
+  void convertToCellCSigma();
+  void applyCellCSigma(const Vector<Number>& src, Vector<Number>& dst);
   static const int block_size = Vector<Number>::block_size;
 
   SparseMatrix(const std::vector<unsigned int> &row_lengths,
