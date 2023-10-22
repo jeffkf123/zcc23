@@ -279,6 +279,8 @@ cudaEventSynchronize(stop);
 float millisecondsCRS = 0;
 cudaEventElapsedTime(&millisecondsCRS, start, stop);
 
+const int numThreads = 32; 
+const int numBlocks = (N * N * N + numThreads - 1) / numThreads;
 // For CELL-C-Sigma format
 cudaEventRecord(start);
 matrixVectorProductCellCSigma<<<numBlocks, numThreads>>>(cellCSigmaMatrix, vector, resultCellCSigma);
