@@ -2,16 +2,17 @@
 #define sparse_matrix_hpp
 
 #include <utility>
-#include <vector>
-#include <iostream>
-#include <cassert>
 
 #ifdef HAVE_MPI
 #  include <mpi.h>
 #endif
 
 #include <omp.h>
+
+#include <vector>
+
 #include "vector.hpp"
+
 
 #ifndef DISABLE_CUDA
 template <typename Number>
@@ -22,151 +23,37 @@ __global__ void compute_spmv(const std::size_t N,
                              const Number *x,
                              Number *y)
 {
-    const int idx = threadIdx.x + blockIdx.x * blockDim.x;
-    if (idx < N)
-    {
-        Number sum = 0;
-        for (std::size_t start = row_starts[idx]; start < row_starts[idx + 1]; ++start)
-        {
-            sum += values[start] * x[column_indices[start]];
-        }
-        y[idx] = sum;
-    }
+  // TODO implement for GPU
+}
+#endif
+
+#ifndef DISABLE_CUDA
+template <typename Number>
+__global__ void compute_spmv(const std::size_t N,
+                             const std::size_t *row_starts,
+                             const unsigned int *column_indices,
+                             const Number *values,
+                             const Number *x,
+                             Number *y)
+{
+  const int row = blockIdx.x * blockDim.x + threadIdx.x;
+  if (row < N)
+  {
+    Number sum = 0;
+    for (std::size_t idx = row_starts[row]; idx < row_starts[row + 1]; ++idx)
+      sum += values[idx] * x[column_indices[idx]];
+    y[row] = sum;
+  }
 }
 #endif
 
 
-
 // Sparse matrix in compressed row storage (crs) format
-template <typename Number>
-void SparseMatrix<Number>::convertToCellCSigma() {
-    constexpr int C = 32;  // Block size
 
-    // Temporary structures for the converted matrix
-    std::vector<Number> new_values;
-    std::vector<unsigned int> new_column_indices;
-
-    // Iterate over the matrix in blocks
-    for (int i = 0; i < n_rows; i += C) {
-        for (int j = 0; j < n_cols; j += C) {
-            // Extract the block
-            std::vector<Number> block_values;
-            std::vector<unsigned int> block_indices;
-
-            for (int ii = i; ii < std::min(i + C, n_rows); ++ii) {
-                for (int jj = j; jj < std::min(j + C, n_cols); ++jj) {
-                    // Assuming the matrix is stored in CRS format
-                    for (int k = row_lengths[ii]; k < row_lengths[ii + 1]; ++k) {
-                        if (column_indices[k] == jj) {
-                            block_values.push_back(values[k]);
-                            block_indices.push_back(jj);
-                        }
-                    }
-                }
-            }
-
-            // Sort the block according to the sigma function (identity in this case)
-            // ...
-
-            // Append the sorted block to new_values and new_column_indices
-            new_values.insert(new_values.end(), block_values.begin(), block_values.end());
-            new_column_indices.insert(new_column_indices.end(), block_indices.begin(), block_indices.end());
-        }
-    }
-
-    // Update the member variables with the converted data
-    values = new_values;
-    column_indices = new_column_indices;
-}
-template <typename Number>
-void SparseMatrix<Number>::applyCellCSigma(const Vector<Number>& src, Vector<Number>& dst) {
-    constexpr int C = 32;  // Block size
-
-    // Clear the destination vector
-    dst.clear();
-
-    // Iterate over the matrix in blocks
-    for (int i = 0; i < n_rows; i += C) {
-        for (int j = 0; j < n_cols; j += C) {
-            // Extract the block
-            std::vector<Number> block_values;
-            std::vector<unsigned int> block_indices;
-
-            for (int ii = i; ii < std::min(i + C, n_rows); ++ii) {
-                Number sum = 0;
-                for (int jj = j; jj < std::min(j + C, n_cols); ++jj) {
-                    // Assuming the matrix is stored in CRS format
-                    for (int k = row_lengths[ii]; k < row_lengths[ii + 1]; ++k) {
-                        if (column_indices[k] == jj) {
-                            sum += values[k] * src[jj];
-                        }
-                    }
-                }
-                dst[ii] += sum;
-            }
-        }
-    }
-}
-#define BLOCK_SIZE 32
-
-// CELL-C-Sigma matrix storage format
-class CellCSigmaMatrix {
-public:
-    double* values;           // Non-zero values of the matrix
-    int* column_indices;      // Column indices of the non-zero values
-    int* block_lengths;       // Number of non-zero elements in each block
-
-    // Constructor
-    CellCSigmaMatrix(int numRows, int numCols) {
-        int numBlocks = (numRows * numCols) / (BLOCK_SIZE * BLOCK_SIZE);
-        values = new double[numBlocks * BLOCK_SIZE * BLOCK_SIZE];
-        column_indices = new int[numBlocks * BLOCK_SIZE * BLOCK_SIZE];
-        block_lengths = new int[numBlocks];
-        
-        // Initialize with zeros and default column indices
-        for (int i = 0; i < numBlocks * BLOCK_SIZE * BLOCK_SIZE; i++) {
-            values[i] = 0.0;
-            column_indices[i] = 0;  // Default to the first entry of the row
-        }
-        for (int i = 0; i < numBlocks; i++) {
-            block_lengths[i] = 0;
-        }
-    }
-
-    // Destructor
-    ~CellCSigmaMatrix() {
-        delete[] values;
-        delete[] column_indices;
-        delete[] block_lengths;
-    }
-};
-CellCSigmaMatrix convertCRStoCellCSigma(const SparseMatrix& crsMatrix) {
-    CellCSigmaMatrix cellCSigmaMatrix(crsMatrix.numRows, crsMatrix.numCols);
-    int numBlockCols = (crsMatrix.numCols + BLOCK_SIZE - 1) / BLOCK_SIZE;
-
-    for (int i = 0; i < crsMatrix.numRows; i++) {
-        int blockRow = i / BLOCK_SIZE;
-        for (int j = crsMatrix.row_ptr[i]; j < crsMatrix.row_ptr[i + 1]; j++) {
-            int col = crsMatrix.col_idx[j];
-            int blockCol = col / BLOCK_SIZE;
-            int blockIdx = blockRow * numBlockCols + blockCol;
-
-            int pos = blockIdx * BLOCK_SIZE * BLOCK_SIZE + cellCSigmaMatrix.block_lengths[blockIdx];
-            cellCSigmaMatrix.values[pos] = crsMatrix.val[j];
-            cellCSigmaMatrix.column_indices[pos] = col % BLOCK_SIZE;
-            cellCSigmaMatrix.block_lengths[blockIdx]++;
-        }
-    }
-
-    return cellCSigmaMatrix;
-}
 template <typename Number>
 class SparseMatrix
 {
 public:
-
-  void convertToCellCSigma();
-  void applyCellCSigma(const Vector<Number>& src, Vector<Number>& dst);
   static const int block_size = Vector<Number>::block_size;
 
   SparseMatrix(const std::vector<unsigned int> &row_lengths,
@@ -369,15 +256,15 @@ public:
   }
 
 
-    void apply(const Vector<Number> &src, Vector<Number> &dst) const
-    {
-        if (m() != src.size_on_this_rank() || m() != dst.size_on_this_rank())
-        {
-            std::cout << "vector sizes of src " << src.size_on_this_rank()
-                      << " and dst " << dst.size_on_this_rank()
-                      << " do not match matrix size " << m() << std::endl;
-            std::abort();
-        }
+  void apply(const Vector<Number> &src, Vector<Number> &dst) const
+  {
+    if (m() != src.size_on_this_rank() || m() != dst.size_on_this_rank())
+      {
+        std::cout << "vector sizes of src " << src.size_on_this_rank()
+                  << " and dst " << dst.size_on_this_rank()
+                  << " do not match matrix size " << m() << std::endl;
+        std::abort();
+      }
 
 #ifdef HAVE_MPI
     // start exchanging the off-processor data
@@ -410,27 +297,32 @@ public:
 #endif
 
     // main loop for the sparse matrix-vector product
-        if (memory_space == MemorySpace::CUDA)
-        {
+    if (memory_space == MemorySpace::CUDA)
+      {
 #ifndef DISABLE_CUDA
-            const unsigned int n_blocks = (n_rows + block_size - 1) / block_size;
-            compute_spmv<<<n_blocks, block_size>>>(n_rows, row_starts, column_indices, values, src.begin(), dst.begin());
-            AssertCuda(cudaPeekAtLastError());
+        const unsigned int n_blocks = (n_rows + block_size - 1) / block_size;
+        compute_spmv<<<n_blocks, block_size>>>(n_rows,
+                                               row_starts,
+                                               column_indices,
+                                               values,
+                                               src.begin(),
+                                               dst.begin());
+        AssertCuda(cudaPeekAtLastError());
 #endif
-        }
-        else
-        {
+
+      }
+    else
+      {
 #pragma omp parallel for
-            for (unsigned int row = 0; row < n_rows; ++row)
-            {
-                Number sum = 0;
-                for (std::size_t idx = row_starts[row]; idx < row_starts[row + 1]; ++idx)
-                {
-                    sum += values[idx] * src(column_indices[idx]);
-                }
-                dst(row) = sum;
-            }
-        }
+        for (unsigned int row = 0; row < n_rows; ++row)
+          {
+            Number sum = 0;
+            for (std::size_t idx = row_starts[row]; idx < row_starts[row + 1];
+                 ++idx)
+              sum += values[idx] * src(column_indices[idx]);
+            dst(row) = sum;
+          }
+      }
 
 #ifdef HAVE_MPI
     MPI_Waitall(mpi_requests.size(), mpi_requests.data(), MPI_STATUSES_IGNORE);

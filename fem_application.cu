@@ -1,34 +1,14 @@
+
+
 #include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+
 #include "conjugate_gradient.hpp"
 #include "sparse_matrix.hpp"
 #include "vector.hpp"
 
-
-__global__ void cellCSigmaMatVecKernel(double* values, int* column_indices, int* block_lengths, double* src, double* dst, int numBlocks, int numRows) {
-    int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row < numRows) {
-        double sum = 0.0;
-        int blockRow = row / BLOCK_SIZE;
-        int blockStart = blockRow * BLOCK_SIZE * BLOCK_SIZE;
-        int blockEnd = blockStart + block_lengths[blockRow];
-        for (int i = blockStart; i < blockEnd; i++) {
-            sum += values[i] * src[column_indices[i]];
-        }
-        dst[row] = sum;
-    }
-}
-
-// Inside the SparseMatrix class in sparse_matrix.hpp
-
-void applyCellCSigma(const Vector<Number>& src, Vector<Number>& dst) {
-    const int threadsPerBlock = 256;
-    const int blocks = (numRows + threadsPerBlock - 1) / threadsPerBlock;
-    cellCSigmaMatVecKernel<<<blocks, threadsPerBlock>>>(values, column_indices, block_lengths, src.data(), dst.data(), numBlocks, numRows);
-    cudaDeviceSynchronize();  // Ensure completion before returning
-}
 
 
 template <typename Number>
@@ -113,21 +93,9 @@ void run_test(const long long N, const long long n_repeat)
   MPI_Comm communicator = MPI_COMM_SELF;
   const MemorySpace host_space = MemorySpace::Host;
 
-      SparseMatrix<Number> matrix = fill_sparse_matrix<Number>(N, host_space);
+  SparseMatrix<Number> matrix = fill_sparse_matrix<Number>(N, host_space);
+  SparseMatrix<Number> matrix_dev = matrix.copy_to_device();
 
-    // Convert CRS matrix to CELL-C-Sigma format
-    CellCSigmaMatrix cellCSigmaMatrix = convertCRStoCellCSigma(matrix);
-
-    // Transfer the CELL-C-Sigma matrix to the GPU
-    double* d_values;
-    int* d_column_indices;
-    int* d_block_lengths;
-    cudaMalloc(&d_values, sizeof(double) * cellCSigmaMatrix.numBlocks * BLOCK_SIZE * BLOCK_SIZE);
-    cudaMalloc(&d_column_indices, sizeof(int) * cellCSigmaMatrix.numBlocks * BLOCK_SIZE * BLOCK_SIZE);
-    cudaMalloc(&d_block_lengths, sizeof(int) * cellCSigmaMatrix.numBlocks);
-    cudaMemcpy(d_values, cellCSigmaMatrix.values, sizeof(double) * cellCSigmaMatrix.numBlocks * BLOCK_SIZE * BLOCK_SIZE, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_column_indices, cellCSigmaMatrix.column_indices, sizeof(int) * cellCSigmaMatrix.numBlocks * BLOCK_SIZE * BLOCK_SIZE, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_block_lengths, cellCSigmaMatrix.block_lengths, sizeof(int) * cellCSigmaMatrix.numBlocks, cudaMemcpyHostToDevice);
   Vector<Number>    src(N * N * N, host_space);
   Vector<Number>    dst(src), result(src);
 
@@ -145,7 +113,7 @@ void run_test(const long long N, const long long n_repeat)
   Vector<Number> src_device = src.copy_to_device();
   Vector<Number> dst_device = dst.copy_to_device();
 
-   matrix_dev.applyCellCSigma(src_device, dst_device);
+  matrix_dev.apply(src_device, dst_device);
 
   dst = dst_device.copy_to_host();
 
@@ -179,7 +147,7 @@ void run_test(const long long N, const long long n_repeat)
     cudaDeviceSynchronize();
     const auto t1 = std::chrono::steady_clock::now();
     for (unsigned long long rep = 0; rep < n_repeat; ++rep)
-      matrix_dev.applyCellCSigma(src_device, dst_device);
+      matrix_dev.apply(src_device, dst_device);
     cudaDeviceSynchronize();
 
     const double time =
@@ -223,40 +191,6 @@ void run_test(const long long N, const long long n_repeat)
     const double l2_norm = result.l2_norm();
     std::cout << "Error conjugate gradient solve: " << l2_norm << std::endl;
   }
-
-  Vector<Number> result_crs = matrix.apply(src);
-
-// Compare the results
-bool is_correct = true;
-for (int i = 0; i < N * N * N; i++) {
-    if (std::abs(result(i) - result_crs(i)) > 1e-6) {
-        is_correct = false;
-        break;
-    }
-}
-
-if (is_correct) {
-    std::cout << "Matrix-vector product using CELL-C-Sigma format is correct!" << std::endl;
-} else {
-    std::cout << "Matrix-vector product using CELL-C-Sigma format is incorrect!" << std::endl;
-}
-
-
-// Measure performance for CELL-C-Sigma format
-auto start_cellcsigma = std::chrono::high_resolution_clock::now();
-matrix_dev.applyCellCSigma(src_device, dst_device);
-auto end_cellcsigma = std::chrono::high_resolution_clock::now();
-std::chrono::duration<double> elapsed_cellcsigma = end_cellcsigma - start_cellcsigma;
-
-// Measure performance for CRS format
-auto start_crs = std::chrono::high_resolution_clock::now();
-matrix.apply(src, result_crs);
-auto end_crs = std::chrono::high_resolution_clock::now();
-std::chrono::duration<double> elapsed_crs = end_crs - start_crs;
-
-std::cout << "Performance (CELL-C-Sigma): " << elapsed_cellcsigma.count() << " seconds" << std::endl;
-std::cout << "Performance (CRS): " << elapsed_crs.count() << " seconds" << std::endl;
-
 }
 
 
@@ -267,9 +201,9 @@ int main(int argc, char **argv)
   MPI_Init(&argc, &argv);
 #endif
 
-  long long          N           = 32;
+  long long          N           = -1;
   long long          n_repeat    = 100;
-  std::string        number      = "float";
+  std::string        number      = "double";
   const unsigned int my_mpi_rank = get_my_mpi_rank(MPI_COMM_WORLD);
 
   if (argc % 2 == 0)
