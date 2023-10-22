@@ -193,7 +193,20 @@ void run_test(const long long N, const long long n_repeat)
   }
 }
 
+__global__ void matrixVectorProductCellCSigma(const CellCSigmaMatrix matrix, const double* vector, double* result) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int row = tid / C;
+    int offset = tid % C;
 
+    if (row < matrix.num_blocks) {
+        double sum = 0.0;
+        for (int j = 0; j < matrix.block_lengths[row]; j++) {
+            int idx = row * C * C + offset * C + j;
+            sum += matrix.values[idx] * vector[matrix.column_indices[idx]];
+        }
+        result[tid] = sum;
+    }
+}
 
 int main(int argc, char **argv)
 {
@@ -246,7 +259,44 @@ int main(int argc, char **argv)
         run_test<float>(N, n_repeat);
     }
 
+SparseMatrix crsMatrix;
+double* vector;
+double* resultCRS;
+double* resultCellCSigma;
+
+// Convert CRS matrix to CELL-C-Sigma format
+CellCSigmaMatrix cellCSigmaMatrix = convertToCellCSigma(crsMatrix);
+
+cudaEvent_t start, stop;
+cudaEventCreate(&start);
+cudaEventCreate(&stop);
+
+// For CRS format
+cudaEventRecord(start);
+// Call your CRS matrix-vector product kernel here
+cudaEventRecord(stop);
+cudaEventSynchronize(stop);
+float millisecondsCRS = 0;
+cudaEventElapsedTime(&millisecondsCRS, start, stop);
+
+// For CELL-C-Sigma format
+cudaEventRecord(start);
+matrixVectorProductCellCSigma<<<numBlocks, numThreads>>>(cellCSigmaMatrix, vector, resultCellCSigma);
+cudaEventRecord(stop);
+cudaEventSynchronize(stop);
+float millisecondsCellCSigma = 0;
+cudaEventElapsedTime(&millisecondsCellCSigma, start, stop);
+
+// Print out the timing results
+printf("CRS format took: %f ms\n", millisecondsCRS);
+printf("CELL-C-Sigma format took: %f ms\n", millisecondsCellCSigma);
+
+
+
 #ifdef HAVE_MPI
   MPI_Finalize();
 #endif
+
+
+
 }

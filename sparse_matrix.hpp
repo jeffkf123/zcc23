@@ -47,6 +47,53 @@ __global__ void compute_spmv(const std::size_t N,
 }
 #endif
 
+#define C 32
+#define SIGMA 1
+
+struct CellCSigmaMatrix {
+    double* values;          // Array to hold non-zero values
+    int* column_indices;     // Array to hold column indices
+    int* block_lengths;      // Array to hold lengths of each block
+    int num_blocks;          // Number of blocks
+};
+
+CellCSigmaMatrix convertToCellCSigma(const SparseMatrix& crsMatrix) {
+    CellCSigmaMatrix cellCSigmaMatrix;
+
+    // Determine the number of blocks
+    cellCSigmaMatrix.num_blocks = (crsMatrix.num_rows + C - 1) / C;
+
+    // Allocate memory for values, column_indices, and block_lengths
+    cellCSigmaMatrix.values = new double[cellCSigmaMatrix.num_blocks * C * C];
+    cellCSigmaMatrix.column_indices = new int[cellCSigmaMatrix.num_blocks * C * C];
+    cellCSigmaMatrix.block_lengths = new int[cellCSigmaMatrix.num_blocks];
+
+    // Initialize values and column_indices with zeros and block_lengths with C
+    for (int i = 0; i < cellCSigmaMatrix.num_blocks * C * C; i++) {
+        cellCSigmaMatrix.values[i] = 0.0;
+        cellCSigmaMatrix.column_indices[i] = 0;
+    }
+    for (int i = 0; i < cellCSigmaMatrix.num_blocks; i++) {
+        cellCSigmaMatrix.block_lengths[i] = C;
+    }
+
+    // Convert CRS format to CELL-C-Sigma format
+    for (int i = 0; i < crsMatrix.num_rows; i++) {
+        int block_idx = i / C;
+        int block_offset = i % C;
+        for (int j = crsMatrix.row_ptr[i]; j < crsMatrix.row_ptr[i + 1]; j++) {
+            int col = crsMatrix.col_indices[j];
+            double value = crsMatrix.values[j];
+
+            int position = block_idx * C * C + block_offset * C + col % C;
+            cellCSigmaMatrix.values[position] = value;
+            cellCSigmaMatrix.column_indices[position] = col;
+        }
+    }
+
+    return cellCSigmaMatrix;
+}
+
 
 // Sparse matrix in compressed row storage (crs) format
 
